@@ -309,6 +309,9 @@ const creditReservationsRegistry = new Map<string, {
   createdAt: string;
 }>();
 
+// In-memory set for Prisma mode webhook idempotency
+const processedTxInMemory = new Set<string>();
+
 export const DbEngine = {
   // --- USERS ---
   async getUserByEmail(email: string): Promise<User | undefined> {
@@ -857,14 +860,7 @@ export const DbEngine = {
   // --- REPLAY PROTECTION & STRIPE WEBHOOK COMPLIANCE ---
   async checkCompletedTransaction(transactionId: string): Promise<boolean> {
     if (isPrismaActive) {
-      try {
-        const sub = await prisma.subscription.findFirst({
-          where: { stripeSubscriptionId: transactionId }
-        });
-        return !!sub;
-      } catch {
-        return false;
-      }
+      return processedTxInMemory.has(transactionId);
     }
     const activeDb = initDb();
     return activeDb.processedTransactions.includes(transactionId);
@@ -872,6 +868,7 @@ export const DbEngine = {
 
   async registerProcessedTransaction(transactionId: string): Promise<void> {
     if (isPrismaActive) {
+      processedTxInMemory.add(transactionId);
       return;
     }
     const activeDb = initDb();

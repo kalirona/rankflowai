@@ -3,42 +3,41 @@ import crypto from "crypto";
 import { z } from "zod";
 
 const isProd = process.env.NODE_ENV === "production";
+const DEFAULT_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const DEFAULT_SECRET = "rankflow-ai-development-jwt-super-secret-key-123456";
 
 // 1. Environment Variable Schema Validation
 export const EnvSchema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   APP_URL: z.string().url().default("http://localhost:3000"),
   ENCRYPTION_KEY: z.string()
-    .length(64, "ENCRYPTION_KEY must be a 64-character hex string representing a 256-bit key")
-    .default("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-  JWT_SECRET: z.string().min(12).default("rankflow-ai-development-jwt-super-secret-key-123456"),
+    .length(64, "ENCRYPTION_KEY must be a 64-character hex string representing a 256-bit key"),
+  JWT_SECRET: z.string().min(12),
 });
 
 let parsedEnv: z.infer<typeof EnvSchema>;
-try {
-  const rawKey = process.env.ENCRYPTION_KEY || "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-  const rawSecret = process.env.JWT_SECRET || "rankflow-ai-development-jwt-super-secret-key-123456";
+const rawKey = process.env.ENCRYPTION_KEY;
+const rawSecret = process.env.JWT_SECRET;
 
-  if (isProd) {
-    if (rawKey === "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") {
-      console.warn("⚠️ WARNING: Utilizing default development ENCRYPTION_KEY fallback in active environment. Update ENCRYPTION_KEY immediately for full production-grade safety.");
-    }
-    if (rawSecret === "rankflow-ai-development-jwt-super-secret-key-123456") {
-      console.warn("⚠️ WARNING: Utilizing default development JWT_SECRET fallback in active environment. Update JWT_SECRET immediately for full production-grade safety.");
-    }
+if (isProd) {
+  if (!rawKey || rawKey === DEFAULT_KEY) {
+    throw new Error("FATAL: ENCRYPTION_KEY must be set to a unique 64-char hex string in production.");
   }
-
+  if (!rawSecret || rawSecret === DEFAULT_SECRET) {
+    throw new Error("FATAL: JWT_SECRET must be set to a unique strong secret in production.");
+  }
   parsedEnv = EnvSchema.parse({
     GEMINI_API_KEY: process.env.GEMINI_API_KEY,
     APP_URL: process.env.APP_URL,
     ENCRYPTION_KEY: rawKey,
     JWT_SECRET: rawSecret,
   });
-} catch (err) {
-  console.warn("⚠️ Invalid environment configurations. Falling back to development defaults...", err);
+} else {
   parsedEnv = EnvSchema.parse({
-    ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    JWT_SECRET: "rankflow-ai-development-jwt-super-secret-key-123456"
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+    APP_URL: process.env.APP_URL,
+    ENCRYPTION_KEY: rawKey || DEFAULT_KEY,
+    JWT_SECRET: rawSecret || DEFAULT_SECRET,
   });
 }
 

@@ -1,12 +1,15 @@
 // server.ts
+import "dotenv/config";
 import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import cookieParser from "cookie-parser";
 import bcryptjs from "bcryptjs";
 import crypto from "crypto";
+import helmet from "helmet";
+import cors from "cors";
 import { z } from "zod";
-import { DbEngine } from "./server/db";
+import { DbEngine, prisma } from "./server/db";
 import { ENV, encryptWpPassword, decryptWpPassword, sanitizeInput } from "./server/security";
 import { Role, CreditType, SubscriptionStatus, SyncStatus } from "./src/types";
 import { WordPressClient } from "./lib/wordpress-client";
@@ -90,6 +93,34 @@ function rateLimitMiddleware(limit: number, windowMs: number, message = "Too man
   };
 }
 
+// 2b. Account lockout — lock after 5 failed attempts within 15 minutes
+const accountLockouts = new Map<string, { attempts: number; lockedUntil: number }>();
+
+function checkAccountLockout(email: string): void {
+  const key = email.toLowerCase();
+  const entry = accountLockouts.get(key);
+  if (entry && Date.now() < entry.lockedUntil) {
+    throw new Error("Account temporarily locked due to too many failed login attempts. Please try again in 15 minutes.");
+  }
+  if (entry && Date.now() >= entry.lockedUntil) {
+    accountLockouts.delete(key);
+  }
+}
+
+function recordFailedLogin(email: string): void {
+  const key = email.toLowerCase();
+  const entry = accountLockouts.get(key) || { attempts: 0, lockedUntil: 0 };
+  entry.attempts++;
+  if (entry.attempts >= 5) {
+    entry.lockedUntil = Date.now() + 15 * 60 * 1000;
+  }
+  accountLockouts.set(key, entry);
+}
+
+function clearAccountLockout(email: string): void {
+  accountLockouts.delete(email.toLowerCase());
+}
+
 // 3. Cryptographic Billing Webhook Utilities
 function generateBillingEventSignature(payload: string): string {
   return crypto.createHmac("sha256", ENV.JWT_SECRET)
@@ -110,8 +141,21 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Global parsing and cookie configurations
+  // Security headers
+  app.use(helmet({
+    crossOriginResourcePolicy: { policy: "same-origin" },
+    contentSecurityPolicy: false,
+  }));
+
+  // Strict CORS
+  app.use(cors({
+    origin: ENV.APP_URL,
+    credentials: true,
+  }));
+
+  // Body parser with size limit
   app.use(express.json({
+    limit: "1mb",
     verify: (req: any, res, buf) => {
       req.rawBody = buf;
     }
@@ -126,15 +170,14 @@ async function startServer() {
     next();
   });
 
-  // Inject CSRF Token Cookie Generator on every GET request or index
+  // Inject CSRF Token Cookie on every GET request
   app.use((req, res, next) => {
     if (!req.cookies.csrftoken) {
       const csrfToken = crypto.randomBytes(24).toString("hex");
       res.cookie("csrftoken", csrfToken, {
         secure: true,
-        sameSite: "none"
+        sameSite: "strict"
       });
-      // Stabilize on request cookies
       req.cookies.csrftoken = csrfToken;
     }
     next();
@@ -146,13 +189,8 @@ async function startServer() {
       return next();
     }
     
-    // Webhook bypasses cookie validation because it uses pre-shared HMAC keys for server-to-server security
+    // Webhook bypass — uses HMAC signature, not cookies
     if (req.path === "/api/billing/webhook") {
-      return next();
-    }
-
-    // Bypass CSRF in non-production environments to prevent iframe preview embedding cookie blocks
-    if (process.env.NODE_ENV !== "production") {
       return next();
     }
 
@@ -167,6 +205,17 @@ async function startServer() {
   };
 
   app.use(requireCsrf);
+
+  // Health check endpoint for load balancer probes
+  app.get("/api/health", async (req: Request, res: Response) => {
+    const dbOk = !!process.env.DATABASE_URL ? await prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false) : true;
+    res.status(dbOk ? 200 : 503).json({
+      status: dbOk ? "healthy" : "degraded",
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      db: dbOk ? "connected" : "disconnected",
+    });
+  });
 
   // 1. Authenticated User Middleware
   const requireAuth = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
@@ -200,11 +249,14 @@ async function startServer() {
   // 1. Register Action
   const registerSchema = z.object({
     email: z.string().email("Invalid email format"),
-    password: z.string().min(6, "Password must be at least 6 characters"),
+    password: z.string().min(8, "Password must be at least 8 characters").regex(/[A-Za-z]/, "Password must contain at least one letter").regex(/[0-9]/, "Password must contain at least one number"),
     name: z.string().min(1, "Name is required").max(100),
   });
 
   const authLimit = rateLimitMiddleware(10, 60000, "Too many authentication attempts. Please try again in 1 minute.");
+  const creditLimit = rateLimitMiddleware(20, 60000, "Too many credit operations. Please slow down.");
+  const importLimit = rateLimitMiddleware(5, 60000, "Too many import requests. Please wait before importing again.");
+  const syncLimit = rateLimitMiddleware(30, 60000, "Too many sync requests. Please slow down.");
 
   app.post("/api/auth/register", authLimit, async (req: Request, res: Response) => {
     try {
@@ -238,7 +290,7 @@ async function startServer() {
       res.cookie("rankflow_session", token, {
         httpOnly: true,
         secure: true,
-        sameSite: "none",
+        sameSite: "strict",
         expires
       });
 
@@ -275,15 +327,19 @@ async function startServer() {
       const parsedBody = loginSchema.parse(req.body);
       const email = sanitizeInput(parsedBody.email);
 
+      // Check account lockout
+      try { checkAccountLockout(email); } catch (e: any) {
+        res.status(429).json({ error: e.message });
+        return;
+      }
+
       const user = await DbEngine.getUserByEmail(email);
       if (!user) {
-        // Track failed login attempts for audit compliance
+        recordFailedLogin(email);
         await DbEngine.createActivityLog(
-          null,
-          "LOGIN_FAILED",
+          null, "LOGIN_FAILED",
           { email, reason: "User not found", ip: (req as any).clientIp },
-          (req as any).clientIp,
-          req.headers["user-agent"] || null
+          (req as any).clientIp, req.headers["user-agent"] || null
         );
         res.status(401).json({ error: "Invalid email or password combination" });
         return;
@@ -291,17 +347,17 @@ async function startServer() {
 
       const match = bcryptjs.compareSync(parsedBody.password, user.passwordHash);
       if (!match) {
-        // Log failed login
+        recordFailedLogin(email);
         await DbEngine.createActivityLog(
-          null,
-          "LOGIN_FAILED",
+          null, "LOGIN_FAILED",
           { email, reason: "Password mismatch", userId: user.id, ip: (req as any).clientIp },
-          (req as any).clientIp,
-          req.headers["user-agent"] || null
+          (req as any).clientIp, req.headers["user-agent"] || null
         );
         res.status(401).json({ error: "Invalid email or password combination" });
         return;
       }
+
+      clearAccountLockout(email);
 
       // Generate Session Token
       const token = `tok_${crypto.randomBytes(32).toString("hex")}`;
@@ -311,11 +367,11 @@ async function startServer() {
       res.cookie("rankflow_session", token, {
         httpOnly: true,
         secure: true,
-        sameSite: "none",
+        sameSite: "strict",
         expires
       });
 
-      // Audit Successful registration
+      // Audit Successful login
       await DbEngine.createActivityLog(
         user.id,
         "LOGIN_SUCCESS",
@@ -1087,7 +1143,11 @@ async function startServer() {
         }
       }
 
-      // 9.2. Interactive sandbox transaction fallback (Supporting both Stripe & PayPal flows)
+      // 9.2. Sandbox fallback (development only)
+      if (process.env.NODE_ENV === "production") {
+        res.status(500).json({ error: "Payment gateway unavailable. No valid payment provider configured." });
+        return;
+      }
       const transactionId = `tx_${gateway}_${crypto.randomBytes(8).toString("hex")}`;
       const timestamp = Date.now().toString();
 
@@ -1143,13 +1203,19 @@ async function startServer() {
           console.warn("Could not generate Stripe billing portal:", err);
         }
       }
+      if (process.env.NODE_ENV === "production") {
+        res.status(501).json({ error: "Billing portal not available. No payment provider configured." });
+        return;
+      }
       res.json({ url: `${ENV.APP_URL}/?billing_portal_sandbox=true` });
     } catch (err: any) {
-      res.status(500).json({ error: err.message || "Failed to load billing portal." });
+      console.error("Billing portal error:", err);
+      res.status(500).json({ error: "Failed to load billing portal." });
     }
   });
 
-  // 9.3b. Sandbox Testing Credit Instagrant Route
+  // 9.3b. Sandbox Testing Credit Grant Route (development only)
+  if (process.env.NODE_ENV !== "production") {
   app.post("/api/billing/claim-sandbox", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const userId = req.user.id;
@@ -1172,9 +1238,10 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error("[Sandbox Credit API Error]:", err);
-      res.status(505).json({ error: err.message || "Failed to issue mock sandbox credit grant." });
+      res.status(505).json({ error: "Failed to issue mock sandbox credit grant." });
     }
   });
+  }
 
   // 9.4. Advanced Usage Tracker & Analytics API
   app.get("/api/billing/usage", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
@@ -1218,7 +1285,7 @@ async function startServer() {
   });
 
   // 11. Import Products from Site Route
-  app.post("/api/products/import", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  app.post("/api/products/import", importLimit, requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     if (activeUserOperations.has(req.user.id)) {
       res.status(429).json({ error: "Another database or API transaction is currently in progress for this profile. Please wait or retry." });
       return;
@@ -1325,7 +1392,7 @@ async function startServer() {
   });
 
   // 12. Optimize Product SEO parameters via Gemini AI Route
-  app.post("/api/products/optimize", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  app.post("/api/products/optimize", creditLimit, requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     if (activeUserOperations.has(req.user.id)) {
       res.status(429).json({ error: "Another database or API transaction is currently in progress for this profile. Please wait or retry." });
       return;
@@ -1693,7 +1760,7 @@ async function startServer() {
   });
 
   // 13. Synchronize optimized changes back to WordPress Route
-  app.post("/api/products/sync", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  app.post("/api/products/sync", syncLimit, requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     if (activeUserOperations.has(req.user.id)) {
       res.status(429).json({ error: "Another database or API transaction is currently in progress for this profile. Please wait or retry." });
       return;
@@ -2281,9 +2348,27 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 RankFlow AI Server booting successfully on http://0.0.0.0:${PORT}`);
   });
+
+  // Graceful shutdown handler
+  const shutdown = async (signal: string) => {
+    console.log(`\n⚠️  Received ${signal}. Shutting down gracefully...`);
+    server.close(() => {
+      console.log("HTTP server closed.");
+    });
+    try {
+      await prisma.$disconnect();
+      console.log("Database connections closed.");
+    } catch (e) {
+      console.error("Error disconnecting database:", e);
+    }
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 startServer();
