@@ -10,14 +10,14 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - APP_URL=${rank.sitenexai.com}
-      - ENCRYPTION_KEY=${0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
-      - JWT_SECRET=${8f7e918c4e652a925f4b005e83a483e56a7b8e5c2d1e03f5b74c2e0f81d582a7}
-      - GEMINI_API_KEY=${344444444444444}
-      - OPENAI_API_KEY=${777777777777777777}
-      - DATABASE_URL=${postgres://postgres:l9sHvBuWzyIZETX2llMTJrd11grV0bAgM1MBJkvS5mXU3yUsQHtCI4Pa4PA2bOJc@jkis5bg4npyt2yp1rhw1n5qi:5432/postgres}
-      - STRIPE_SECRET_KEY=${345344444444444444}
-      - STRIPE_WEBHOOK_SECRET=${dggggggggggggggggghhfh}
+      - APP_URL=${APP_URL}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
     volumes:
       - rankflow-data:/app
 
