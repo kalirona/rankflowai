@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   rankflow-ai:
     build:
@@ -12,12 +10,16 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - APP_URL=https://my-rankflow-domain.com
-      - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-      - JWT_SECRET=rankflow-ai-production-super-secret-key-9876543210
+      - APP_URL=${APP_URL}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
     volumes:
-      # Persist local file-backed secure databases across container redeploys
-      - rankflow-data:/app/data
+      - rankflow-data:/app
 
 volumes:
   rankflow-data:
