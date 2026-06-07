@@ -1,0 +1,8 @@
+{
+  "name": "RankFlow AI",
+  "description": "Enterprise SEO and Woo-to-WP visual synchronization command center.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

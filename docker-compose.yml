@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  rankflow-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rankflow-ai-service
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - APP_URL=https://my-rankflow-domain.com
+      - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - JWT_SECRET=rankflow-ai-production-super-secret-key-9876543210
+    volumes:
+      # Persist local file-backed secure databases across container redeploys
+      - rankflow-data:/app/data
+
+volumes:
+  rankflow-data:
+    driver: local
