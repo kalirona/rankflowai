@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { KeyRound, Mail, AlertTriangle } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { KeyRound, Mail, AlertTriangle, Beaker, Shield, Star, User as UserIcon } from "lucide-react";
 import { getCsrfToken } from "../lib/csrf";
 
 interface LoginViewProps {
@@ -12,6 +12,34 @@ export default function LoginView({ onSuccess, onNavigateToRegister }: LoginView
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [demoAccounts, setDemoAccounts] = useState<{ email: string; name: string; role: string }[] | null>(null);
+  const [demoLoading, setDemoLoading] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/auth/demo-accounts")
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.accounts) setDemoAccounts(data.accounts); })
+      .catch(() => {});
+  }, []);
+
+  const handleDemoLogin = async (email: string) => {
+    setError(null);
+    setDemoLoading(true);
+    try {
+      const response = await fetch("/api/auth/demo-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
+        body: JSON.stringify({ email }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Demo login failed.");
+      onSuccess(data.user);
+    } catch (err: any) {
+      setError(err.message || "Something went wrong.");
+    } finally {
+      setDemoLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -115,7 +143,42 @@ export default function LoginView({ onSuccess, onNavigateToRegister }: LoginView
           </button>
         </form>
 
-        <div className="mt-8 pt-6 border-t border-gray-100 text-center">
+        {demoAccounts && (
+          <div className="mt-6 pt-5 border-t border-dashed border-gray-200">
+            <div className="flex items-center gap-2 mb-3">
+              <Beaker className="w-4 h-4 text-amber-500" />
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Demo Accounts (Sandbox)</span>
+            </div>
+            <div className="space-y-2">
+              {demoAccounts.map(acc => (
+                <button
+                  key={acc.email}
+                  type="button"
+                  disabled={demoLoading}
+                  onClick={() => handleDemoLogin(acc.email)}
+                  className="w-full flex items-center gap-3 px-3.5 py-2.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl text-left transition disabled:opacity-50"
+                >
+                  <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-white border border-gray-200 shrink-0">
+                    {acc.role === "ADMIN" ? <Shield className="w-4 h-4 text-purple-600" /> :
+                     acc.role === "USER" && acc.email.includes("pro") ? <Star className="w-4 h-4 text-amber-500" /> :
+                     <UserIcon className="w-4 h-4 text-gray-500" />}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm font-medium text-gray-800 truncate">{acc.name}</span>
+                    <span className="block text-xs text-gray-400 truncate">{acc.email}</span>
+                  </span>
+                  <span className={`shrink-0 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                    acc.role === "ADMIN" ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"
+                  }`}>
+                    {acc.role}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="mt-6 pt-5 border-t border-gray-100 text-center">
           <p className="text-sm text-gray-600">
             New to RankFlow AI?{" "}
             <button
