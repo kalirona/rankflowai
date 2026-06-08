@@ -402,19 +402,10 @@ async function startServer() {
   ];
 
   app.get("/api/auth/demo-accounts", async (_req: Request, res: Response) => {
-    if (process.env.NODE_ENV === "production") {
-      res.status(404).json({ error: "Not available in production" });
-      return;
-    }
     res.json({ accounts: DEMO_ACCOUNTS.map(({ email, name, role }) => ({ email, name, role })) });
   });
 
   app.post("/api/auth/demo-login", authLimit, async (req: Request, res: Response) => {
-    if (process.env.NODE_ENV === "production") {
-      res.status(404).json({ error: "Not available in production" });
-      return;
-    }
-
     try {
       const { email } = req.body;
       const demoAccount = DEMO_ACCOUNTS.find(a => a.email === email);
