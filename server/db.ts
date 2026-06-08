@@ -11,12 +11,13 @@ import {
 const DB_FILE_PATH = path.join(process.cwd(), "db_store.json");
 
 // Multi-mode database engine initialization
-const isPrismaActive = !!process.env.DATABASE_URL;
+const dbUrl = process.env.DATABASE_URL?.trim() || "";
+const isPrismaActive = dbUrl.length > 0;
 
 export const prisma = new PrismaClient({
   datasources: {
     db: {
-      url: process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/rankflow?schema=public"
+      url: dbUrl || "postgresql://postgres:postgres@localhost:5432/rankflow?schema=public"
     }
   }
 });

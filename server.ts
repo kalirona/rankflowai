@@ -208,7 +208,8 @@ async function startServer() {
 
   // Health check endpoint for load balancer probes
   app.get("/api/health", async (req: Request, res: Response) => {
-    const dbOk = !!process.env.DATABASE_URL ? await prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false) : true;
+    const dbUrl = (process.env.DATABASE_URL || "").trim();
+    const dbOk = dbUrl.length > 0 ? await prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false) : true;
     res.status(dbOk ? 200 : 503).json({
       status: dbOk ? "healthy" : "degraded",
       uptime: process.uptime(),
@@ -390,6 +391,61 @@ async function startServer() {
         console.error("Login error:", error);
         res.status(500).json({ error: "Login failed." });
       }
+    }
+  });
+
+  // --- DEMO ACCOUNTS (sandbox only) ---
+  const DEMO_ACCOUNTS = [
+    { email: "admin@demo.com", password: "Demo@1234", name: "Admin User", role: Role.ADMIN, credits: 99999 },
+    { email: "pro@demo.com", password: "Demo@1234", name: "Pro User", role: Role.USER, credits: 5000 },
+    { email: "user@demo.com", password: "Demo@1234", name: "Regular User", role: Role.USER, credits: 500 },
+    { email: "trial@demo.com", password: "Demo@1234", name: "Trial User", role: Role.USER, credits: 100 },
+  ];
+
+  app.get("/api/auth/demo-accounts", async (_req: Request, res: Response) => {
+    res.json({ accounts: DEMO_ACCOUNTS.map(({ email, name, role }) => ({ email, name, role })) });
+  });
+
+  app.post("/api/auth/demo-login", authLimit, async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+      const demoAccount = DEMO_ACCOUNTS.find(a => a.email === email);
+      if (!demoAccount) {
+        res.status(400).json({ error: "Invalid demo account" });
+        return;
+      }
+
+      let user = await DbEngine.getUserByEmail(demoAccount.email);
+
+      if (!user) {
+        const passwordHash = bcryptjs.hashSync(demoAccount.password, 10);
+        user = await DbEngine.createUser({
+          email: demoAccount.email,
+          name: demoAccount.name,
+          passwordHash,
+          role: demoAccount.role,
+          emailVerified: null,
+          image: null,
+        });
+
+        const extraCredits = demoAccount.credits - 100;
+        if (extraCredits > 0) {
+          await DbEngine.createCreditTransaction(user.id, extraCredits, CreditType.GRANT, "Demo account credit boost");
+        }
+      }
+
+      const token = `tok_${crypto.randomBytes(32).toString("hex")}`;
+      const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await DbEngine.createSession(user.id, token, expires);
+
+      res.cookie("rankflow_session", token, {
+        httpOnly: true, secure: true, sameSite: "strict", expires
+      });
+
+      res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    } catch (error) {
+      console.error("Demo login error:", error);
+      res.status(500).json({ error: "Demo login failed." });
     }
   });
 
