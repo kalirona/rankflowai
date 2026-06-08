@@ -2406,7 +2406,27 @@ async function startServer() {
 
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 RankFlow AI Server booting successfully on http://0.0.0.0:${PORT}`);
+    seedDemoAccounts();
   });
+
+  async function seedDemoAccounts() {
+    for (const acc of DEMO_ACCOUNTS) {
+      try {
+        const existing = await DbEngine.getUserByEmail(acc.email);
+        if (!existing) {
+          const passwordHash = bcryptjs.hashSync(acc.password, 10);
+          const user = await DbEngine.createUser({
+            email: acc.email, name: acc.name, passwordHash, role: acc.role, emailVerified: null, image: null,
+          });
+          const extra = acc.credits - 100;
+          if (extra > 0) await DbEngine.createCreditTransaction(user.id, extra, CreditType.GRANT, "Demo account credit boost");
+          console.log(`  ✅ Demo account created: ${acc.email} (${acc.role})`);
+        }
+      } catch (e) {
+        console.error(`  ❌ Failed to seed ${acc.email}:`, e);
+      }
+    }
+  }
 
   // Graceful shutdown handler
   const shutdown = async (signal: string) => {
