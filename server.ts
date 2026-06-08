@@ -208,7 +208,8 @@ async function startServer() {
 
   // Health check endpoint for load balancer probes
   app.get("/api/health", async (req: Request, res: Response) => {
-    const dbOk = !!process.env.DATABASE_URL ? await prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false) : true;
+    const dbUrl = (process.env.DATABASE_URL || "").trim();
+    const dbOk = dbUrl.length > 0 ? await prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false) : true;
     res.status(dbOk ? 200 : 503).json({
       status: dbOk ? "healthy" : "degraded",
       uptime: process.uptime(),
